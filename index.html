@@ -133,7 +133,10 @@
   }
   .page img{
     width:100%; height:100%; object-fit:cover; display:block;
-    -webkit-user-drag:none; user-select:none; pointer-events:none;
+    -webkit-user-drag:none; user-select:none;
+    touch-action:none;
+    transform-origin: center center;
+    will-change: transform;
   }
   .page .sheen{
     position:absolute; inset:0;
@@ -163,6 +166,45 @@
   }
   .tap-zone.left{ left:0; }
   .tap-zone.right{ right:0; }
+  #stage.is-zoomed .tap-zone{ pointer-events:none; }
+
+  /* zoom controls */
+  .zoom-controls{
+    position:absolute; top:10px; right:10px;
+    z-index:25;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .zoom-btn{
+    width:34px; height:34px;
+    border-radius:50%;
+    background: rgba(20,12,4,0.45);
+    border: 1px solid rgba(232,200,116,0.4);
+    color: var(--gold-bright);
+    font-size:18px; line-height:1;
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer;
+    backdrop-filter: blur(4px);
+    user-select:none;
+    transition: transform 150ms ease, opacity 300ms ease;
+  }
+  .zoom-btn:active{ transform: scale(0.88); }
+  .zoom-btn.disabled{ opacity:0.35; pointer-events:none; }
+
+  .zoom-hint{
+    position:absolute; top:12px; left:12px;
+    z-index:25;
+    font-size:9px; letter-spacing:1.5px; text-transform:uppercase;
+    color: rgba(244,234,214,0.55);
+    background: rgba(20,12,4,0.35);
+    border: 1px solid rgba(232,200,116,0.2);
+    padding: 4px 9px;
+    border-radius: 999px;
+    backdrop-filter: blur(4px);
+    opacity:0;
+    transition: opacity 400ms ease;
+    pointer-events:none;
+  }
+  .zoom-hint.show{ opacity:0.9; }
 
   /* nav arrows */
   .arrow{
@@ -272,6 +314,11 @@
   <div class="tap-zone right" id="zoneRight"></div>
   <div class="arrow prev" id="prevBtn">&#10094;</div>
   <div class="arrow next" id="nextBtn">&#10095;</div>
+  <div class="zoom-controls">
+    <div class="zoom-btn" id="zoomInBtn">&#43;</div>
+    <div class="zoom-btn disabled" id="zoomOutBtn">&#8722;</div>
+  </div>
+  <div class="zoom-hint" id="zoomHint">Pinch or double-tap to zoom</div>
 </div>
 
 <div id="hint">Tap or swipe to continue</div>
@@ -309,6 +356,53 @@ const pageEls = Array.from(book.children);
 const dotEls = Array.from(dotsEl.children);
 const prevBtn = document.getElementById('prevBtn');
 const nextBtn = document.getElementById('nextBtn');
+const stage = document.getElementById('stage');
+const zoomInBtn = document.getElementById('zoomInBtn');
+const zoomOutBtn = document.getElementById('zoomOutBtn');
+const zoomHint = document.getElementById('zoomHint');
+
+const MIN_SCALE = 1;
+const MAX_SCALE = 3;
+let scale = 1, panX = 0, panY = 0;
+
+function activeImg(){
+  return pageEls[current].querySelector('img');
+}
+
+function applyTransform(immediate){
+  const img = activeImg();
+  img.style.transition = immediate ? 'none' : 'transform 220ms ease';
+  img.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+  stage.classList.toggle('is-zoomed', scale > 1.02);
+  zoomOutBtn.classList.toggle('disabled', scale <= MIN_SCALE + 0.02);
+  zoomInBtn.classList.toggle('disabled', scale >= MAX_SCALE - 0.02);
+}
+
+function clampPan(){
+  const maxPanX = (scale - 1) * 220;
+  const maxPanY = (scale - 1) * 150;
+  panX = Math.max(-maxPanX, Math.min(maxPanX, panX));
+  panY = Math.max(-maxPanY, Math.min(maxPanY, panY));
+}
+
+function setScale(newScale){
+  scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale));
+  if(scale <= MIN_SCALE + 0.001){ panX = 0; panY = 0; }
+  clampPan();
+  applyTransform(false);
+}
+
+function resetZoomAll(){
+  pageEls.forEach(el => {
+    const img = el.querySelector('img');
+    img.style.transition = 'none';
+    img.style.transform = 'translate(0px, 0px) scale(1)';
+  });
+  scale = 1; panX = 0; panY = 0;
+  stage.classList.remove('is-zoomed');
+  zoomOutBtn.classList.add('disabled');
+  zoomInBtn.classList.remove('disabled');
+}
 
 function updateArrows(){
   prevBtn.classList.toggle('hidden', current === 0);
@@ -318,6 +412,7 @@ function updateArrows(){
 function goTo(index){
   if(index < 0 || index > pages.length - 1 || index === current || isAnimating) return;
   isAnimating = true;
+  resetZoomAll();
 
   if(index > current){
     // turn forward
@@ -341,22 +436,26 @@ function goTo(index){
   }, 920);
 }
 
-document.getElementById('zoneLeft').addEventListener('click', () => goTo(current - 1));
-document.getElementById('zoneRight').addEventListener('click', () => goTo(current + 1));
+document.getElementById('zoneLeft').addEventListener('click', () => { if(scale <= 1.02) goTo(current - 1); });
+document.getElementById('zoneRight').addEventListener('click', () => { if(scale <= 1.02) goTo(current + 1); });
 prevBtn.addEventListener('click', (e) => { e.stopPropagation(); goTo(current - 1); });
 nextBtn.addEventListener('click', (e) => { e.stopPropagation(); goTo(current + 1); });
 
 document.addEventListener('keydown', (e) => {
   if(e.key === 'ArrowRight') goTo(current + 1);
   if(e.key === 'ArrowLeft') goTo(current - 1);
+  if(e.key === '+' || e.key === '=') setScale(scale + 0.4);
+  if(e.key === '-') setScale(scale - 0.4);
 });
 
-// swipe support
+// swipe support (disabled while zoomed in)
 let touchStartX = 0;
-document.getElementById('stage').addEventListener('touchstart', (e) => {
+stage.addEventListener('touchstart', (e) => {
+  if(scale > 1.02 || e.touches.length > 1) return;
   touchStartX = e.touches[0].clientX;
 }, {passive:true});
-document.getElementById('stage').addEventListener('touchend', (e) => {
+stage.addEventListener('touchend', (e) => {
+  if(scale > 1.02) return;
   const dx = e.changedTouches[0].clientX - touchStartX;
   if(Math.abs(dx) > 40){
     if(dx < 0) goTo(current + 1);
@@ -364,8 +463,94 @@ document.getElementById('stage').addEventListener('touchend', (e) => {
   }
 }, {passive:true});
 
+/* ---------- pinch, pan & double-tap zoom ---------- */
+const pointers = new Map();
+let pinchStartDist = 0;
+let pinchStartScale = 1;
+let panStart = null;
+
+function dist(p1, p2){
+  return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+}
+
+book.addEventListener('pointerdown', (e) => {
+  pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  if(pointers.size === 2){
+    const pts = Array.from(pointers.values());
+    pinchStartDist = dist(pts[0], pts[1]);
+    pinchStartScale = scale;
+  } else if(pointers.size === 1 && scale > 1.02){
+    panStart = {x:e.clientX - panX, y:e.clientY - panY};
+  }
+});
+
+book.addEventListener('pointermove', (e) => {
+  if(!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+
+  if(pointers.size === 2){
+    const pts = Array.from(pointers.values());
+    const newDist = dist(pts[0], pts[1]);
+    if(pinchStartDist > 0){
+      const next = pinchStartScale * (newDist / pinchStartDist);
+      scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, next));
+      if(scale <= MIN_SCALE + 0.001){ panX = 0; panY = 0; }
+      clampPan();
+      applyTransform(true);
+    }
+  } else if(pointers.size === 1 && panStart && scale > 1.02){
+    panX = e.clientX - panStart.x;
+    panY = e.clientY - panStart.y;
+    clampPan();
+    applyTransform(true);
+  }
+});
+
+function endPointer(e){
+  pointers.delete(e.pointerId);
+  panStart = null;
+  if(pointers.size < 2) pinchStartDist = 0;
+  activeImg().style.transition = 'transform 220ms ease';
+}
+book.addEventListener('pointerup', endPointer);
+book.addEventListener('pointercancel', endPointer);
+book.addEventListener('pointerleave', endPointer);
+
+// double-tap / double-click to zoom
+let lastTap = 0;
+book.addEventListener('pointerdown', (e) => {
+  const now = Date.now();
+  if(now - lastTap < 320 && pointers.size <= 1){
+    if(scale > 1.02){
+      setScale(1);
+    } else {
+      const rect = activeImg().getBoundingClientRect();
+      const offsetX = (e.clientX - rect.left - rect.width/2) / rect.width;
+      const offsetY = (e.clientY - rect.top - rect.height/2) / rect.height;
+      setScale(2.2);
+      panX = -offsetX * rect.width * 0.6;
+      panY = -offsetY * rect.height * 0.6;
+      clampPan();
+      applyTransform(false);
+    }
+    hideZoomHint();
+  }
+  lastTap = now;
+});
+
+zoomInBtn.addEventListener('click', (e) => { e.stopPropagation(); setScale(scale + 0.5); hideZoomHint(); });
+zoomOutBtn.addEventListener('click', (e) => { e.stopPropagation(); setScale(scale - 0.5); hideZoomHint(); });
+
+function hideZoomHint(){ zoomHint.classList.remove('show'); }
+
 updateArrows();
 document.getElementById('credit').classList.add('show');
+zoomOutBtn.classList.add('disabled');
+
+setTimeout(() => {
+  zoomHint.classList.add('show');
+  setTimeout(hideZoomHint, 3800);
+}, 3600);
 
 // ambient motes
 const motesWrap = document.getElementById('motes');
